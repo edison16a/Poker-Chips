@@ -16,16 +16,20 @@ struct Player: Identifiable {
     var chips: Int
     var currentBet: Int = 0
     var isFolded: Bool = false
+    
+    // Blind flags
+    var isSmallBlind: Bool = false
+    var isBigBlind:   Bool = false
 }
 
 // MARK: - Poker Stages
 enum GameStage: String {
-    case preflop  = "Pre-Flop"
-    case flop     = "Flop"
-    case turn     = "Turn"
-    case river    = "River"
-    case showdown = "Showdown"
-    case showCards = "Show Cards" // New final stage after 2 bets in showdown
+    case preflop   = "Pre-Flop"
+    case flop      = "Flop"
+    case turn      = "Turn"
+    case river     = "River"
+    case showdown  = "Showdown"
+    case showCards = "Show Cards"
 }
 
 // MARK: - Main Setup View
@@ -33,9 +37,9 @@ struct ContentView: View {
     
     // MARK: - State variables
     @State private var numberOfPlayers = 2
-    @State private var chipValue = 10        // in cents
+    @State private var chipValue = 10       // in cents
     @State private var smallBlind = 1       // in chips
-    @State private var bigBlind = 2        // in chips
+    @State private var bigBlind = 2         // in chips
     @State private var startingChips = 100  // default starting chips for each player
     @State private var players: [Player] = []
     
@@ -45,7 +49,7 @@ struct ContentView: View {
         NavigationStack {
             VStack(spacing: 20) {
                 
-                Text("All Too Well: Poker Setup")
+                Text("Chip In Poker")
                     .font(.title)
                     .fontWeight(.bold)
                     .foregroundColor(accentColor)
@@ -104,7 +108,7 @@ struct ContentView: View {
                 // Starting Chips
                 VStack {
                     Text("Starting Chips: \(startingChips)")
-                    Stepper("Set Starting Chips",
+                    Stepper("Chips",
                             value: $startingChips,
                             in: 100...100000,
                             step: 100) { _ in
@@ -144,7 +148,9 @@ struct ContentView: View {
                     
                     // Start Game
                     NavigationLink(destination: GameView(players: players,
-                                                         chipValue: chipValue)) {
+                                                         chipValue: chipValue,
+                                                         smallBlind: smallBlind,
+                                                         bigBlind: bigBlind)) {
                         Text("Start Game")
                             .padding()
                             .foregroundColor(.white)
@@ -186,20 +192,22 @@ struct ContentView: View {
     }
     
     func resetValues() {
-        numberOfPlayers = 4
-        chipValue = 25
-        smallBlind = 50
-        bigBlind = 100
-        startingChips = 1000
+        numberOfPlayers = 2
+        chipValue = 10
+        smallBlind = 1
+        bigBlind = 2
+        startingChips = 100
         updatePlayers()
     }
 }
 
 // MARK: - Game View (Betting Logic)
 struct GameView: View {
-    // Setup
+    // Setup data
     @State var players: [Player]
     let chipValue: Int
+    let smallBlind: Int
+    let bigBlind: Int
     
     // Game state
     @State private var currentPlayerIndex: Int = 0
@@ -215,8 +223,7 @@ struct GameView: View {
     // Auto stage progression
     @State private var gameStage: GameStage = .preflop
     
-    // We'll count how many "paid bets" happen in Showdown stage
-    // Once we reach 2, we go to Show Cards
+    // Count how many "paid bets" happen in Showdown stage
     @State private var showdownBetCount: Int = 0
     
     var body: some View {
@@ -227,9 +234,11 @@ struct GameView: View {
             
             // Info row
             HStack {
-                Text("Pot: \(pot)")
-                Spacer()
-                Text("Highest Bet: \(currentHighestBet)")
+                Text("Pot: \(pot) (\(currencyString(for: pot)))")
+                    .font(.headline)
+                    .fontWeight(.bold)
+
+         
             }
             .padding(.horizontal)
             
@@ -246,8 +255,9 @@ struct GameView: View {
             // Player List
             List {
                 ForEach(players) { player in
+                    let nameSuffix = blindSuffix(for: player) // e.g. " (Small Blind)" or " (Big Blind)" or ""
                     HStack {
-                        Text(player.name)
+                        Text("\(player.name)\(nameSuffix)")
                             .fontWeight(.semibold)
                         
                         Spacer()
@@ -261,6 +271,14 @@ struct GameView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+                    // Highlight row if big blind or small blind
+                    .listRowBackground(
+                        player.isBigBlind
+                            ? Color.yellow.opacity(0.3)    // Big Blind = yellow
+                            : player.isSmallBlind
+                                ? Color.green.opacity(0.3) // Small Blind = green
+                                : Color.clear
+                    )
                 }
             }
             
@@ -277,10 +295,10 @@ struct GameView: View {
                 .cornerRadius(8)
                 
                 HStack(spacing: 8) {
-                    TextField("Enter raise amount in chips", text: $raiseAmountString)
+                    TextField("Chips", text: $raiseAmountString)
                         .keyboardType(.numberPad)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
-                        .frame(width: 250) // Wider text field
+                        .frame(width: 100)
                         .padding(.leading, 4)
                     
                     // Raise button label
@@ -315,7 +333,6 @@ struct GameView: View {
                 }
                 .pickerStyle(MenuPickerStyle())
                 
-                // Button label: "Award Pot of X ($Y) to Winner"
                 Button("Award Pot of \(pot) (\(currencyString(for: pot))) to Winner") {
                     awardPot()
                 }
@@ -330,6 +347,10 @@ struct GameView: View {
             Spacer()
         }
         .navigationBarTitle("Game in Progress", displayMode: .inline)
+        .onAppear {
+            // Collect blinds at game start
+            startNewRound()
+        }
     }
 }
 
@@ -357,14 +378,51 @@ extension GameView {
         }
     }
     
-    /// If needed <= 0, that's a Check. Otherwise, it's a Call action.
+    /// Assign blinds, subtract chips, and reset data for a fresh round.
+    private func startNewRound() {
+        // Clear blinds/folds/bets
+        for i in players.indices {
+            players[i].isSmallBlind = false
+            players[i].isBigBlind   = false
+            players[i].currentBet   = 0
+            players[i].isFolded     = false
+        }
+        
+        pot = 0
+        currentHighestBet = 0
+        showdownBetCount = 0
+        gameStage = .preflop
+        
+        guard players.count >= 2 else { return }
+        
+        // Player[0] -> small blind (green), Player[1] -> big blind (yellow)
+        players[0].isSmallBlind = true
+        players[1].isBigBlind   = true
+        
+        // Subtract the blinds and add to pot
+        let smallBlindAmount = min(players[0].chips, smallBlind)
+        players[0].chips -= smallBlindAmount
+        players[0].currentBet = smallBlindAmount
+        
+        let bigBlindAmount = min(players[1].chips, bigBlind)
+        players[1].chips -= bigBlindAmount
+        players[1].currentBet = bigBlindAmount
+        
+        pot += smallBlindAmount + bigBlindAmount
+        
+        // The highest bet is bigBlindAmount
+        currentHighestBet = bigBlindAmount
+        
+        // Let's keep it so the first action is from Player[0]
+        currentPlayerIndex = 0
+    }
+    
     private func callOrCheckAction() {
         let needed = currentHighestBet - players[currentPlayerIndex].currentBet
         if needed <= 0 {
             // CHECK
             nextPlayer()
         } else {
-            // CALL
             callAction()
         }
     }
@@ -378,7 +436,7 @@ extension GameView {
         players[currentPlayerIndex].currentBet += toCall
         pot += toCall
         
-        // If we're in showdown, count this as a "bet"
+        // If we're in showdown, track if this was a bet
         if gameStage == .showdown && toCall > 0 {
             showdownBetCount += 1
             checkShowCards()
@@ -392,8 +450,8 @@ extension GameView {
             return
         }
         
-        let newBet = currentHighestBet + raiseAmount
-        let needed = newBet - players[currentPlayerIndex].currentBet
+        let newBet  = currentHighestBet + raiseAmount
+        let needed  = newBet - players[currentPlayerIndex].currentBet
         let actualBet = min(needed, players[currentPlayerIndex].chips)
         
         players[currentPlayerIndex].chips -= actualBet
@@ -404,7 +462,7 @@ extension GameView {
             currentHighestBet = players[currentPlayerIndex].currentBet
         }
         
-        // If we're in showdown, count this as a "bet"
+        // If we're in showdown, track if this was a bet
         if gameStage == .showdown && actualBet > 0 {
             showdownBetCount += 1
             checkShowCards()
@@ -419,15 +477,13 @@ extension GameView {
         nextPlayer()
     }
     
-    /// Moves turn to the next non-folded player, then checks if the betting round should advance.
+    /// Moves turn to the next non-folded player, then checks for round advancement.
     private func nextPlayer() {
-        // If everyone but one is folded, auto-award the pot.
         if allButOneFolded() {
             autoAwardToLastStanding()
             return
         }
         
-        // Move to next
         var nextIndex = currentPlayerIndex
         repeat {
             nextIndex = (nextIndex + 1) % players.count
@@ -435,37 +491,23 @@ extension GameView {
         
         currentPlayerIndex = nextIndex
         
-        // If all active players matched the same bet, move to next stage
         if allActivePlayersMatched() {
             advanceStage()
         }
     }
     
-    /// Checks if only one player remains.
+    /// If only one remains, automatically award pot & start new round.
     private func allButOneFolded() -> Bool {
         players.filter { !$0.isFolded }.count == 1
     }
     
-    /// Awards pot automatically to the last player standing, resets for new round.
     private func autoAwardToLastStanding() {
         guard let lastPlayerIndex = players.firstIndex(where: { !$0.isFolded }) else { return }
-        
         players[lastPlayerIndex].chips += pot
-        pot = 0
-        currentHighestBet = 0
-        
-        // Reset bets/fold
-        for i in players.indices {
-            players[i].currentBet = 0
-            players[i].isFolded = false
-        }
-        
-        // Back to preflop
-        gameStage = .preflop
-        showdownBetCount = 0
+        startNewRound()
     }
     
-    /// Automatically move from preflop → flop → turn → river → showdown (→ showCards if 2 bets).
+    /// Move from preflop → flop → turn → river → showdown, then possibly showCards
     private func advanceStage() {
         switch gameStage {
         case .preflop:   gameStage = .flop
@@ -488,37 +530,38 @@ extension GameView {
         }
     }
     
-    /// Once in showdown, if we get 2 bets, we move to "Show Cards."
+    /// Once in showdown, if 2 bets occur, we go to Show Cards.
     private func checkShowCards() {
         if showdownBetCount >= 2 {
             gameStage = .showCards
         }
     }
     
-    /// Check if all active (non-folded) players have the same currentBet.
+    /// All active players have the same currentBet
     private func allActivePlayersMatched() -> Bool {
-        let activePlayers = players.filter { !$0.isFolded }
-        let firstBet = activePlayers.first?.currentBet ?? 0
-        return activePlayers.allSatisfy { $0.currentBet == firstBet }
+        let active = players.filter { !$0.isFolded }
+        let firstBet = active.first?.currentBet ?? 0
+        return active.allSatisfy { $0.currentBet == firstBet }
     }
     
-    /// Lets the user manually pick a winner (e.g. at Showdown or Show Cards).
+    /// Manually pick a winner, then start new round
     private func awardPot() {
         players[selectedWinnerIndex].chips += pot
-        pot = 0
-        currentHighestBet = 0
-        
-        for i in players.indices {
-            players[i].currentBet = 0
-            players[i].isFolded = false
-        }
-        
-        // If we were at showdown or showCards, go back to pre-flop
-        gameStage = .preflop
-        showdownBetCount = 0
+        startNewRound()
     }
     
-    /// Helper: chipCount → "$xx.xx"
+    /// Add suffix if player is big/small blind
+    private func blindSuffix(for player: Player) -> String {
+        if player.isBigBlind {
+            return " (Big Blind)"
+        } else if player.isSmallBlind {
+            return " (Small Blind)"
+        } else {
+            return ""
+        }
+    }
+    
+    /// Convert chipCount to dollars
     private func currencyString(for chipCount: Int) -> String {
         let totalCents = chipCount * chipValue
         let totalDollars = Double(totalCents) / 100.0
