@@ -295,11 +295,22 @@ struct GameView: View {
                 .cornerRadius(8)
                 
                 HStack(spacing: 8) {
-                    TextField("Chips", text: $raiseAmountString)
-                        .keyboardType(.numberPad)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                        .frame(width: 100)
-                        .padding(.leading, 4)
+                    Slider(
+                        value: Binding(
+                            get: { Double(Int(raiseAmountString) ?? 1) },
+                            set: { newValue in
+                                raiseAmountString = String(Int(newValue))
+                            }
+                        ),
+                        in: 1...100,
+                        step: 1
+                    )
+                    .frame(width: 100)
+                    .padding(.leading, 4)
+                    
+                    // Show the slider's current value as chips
+                    Text("\(raiseAmountString) Chips")
+                    
                     
                     // Raise button label
                     Button(raiseButtonLabel) {
